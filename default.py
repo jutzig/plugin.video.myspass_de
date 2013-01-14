@@ -1,11 +1,17 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 import urllib,urllib2,re,xbmcplugin,xbmcgui,sys,xbmcaddon,socket
+import SimpleDownloader as downloader
+import os
+downloader = downloader.SimpleDownloader()
+
 
 socket.setdefaulttimeout(30)
 pluginhandle = int(sys.argv[1])
 settings = xbmcaddon.Addon(id='plugin.video.myspass_de')
 translation = settings.getLocalizedString
+
+downloadFolder=settings.getSetting("downloadFolder")
 
 forceViewMode=settings.getSetting("forceViewMode")
 if forceViewMode=="true":
@@ -29,7 +35,7 @@ def listShows(type):
         match=re.compile('<li><a href="(.+?)" title="(.+?)"', re.DOTALL).findall(content)
         for url, title in match:
           if url.find("/myspass/shows/"+type+"/")>=0:
-            addDir(title,"http://www.myspass.de"+url,"listMediaTypes","")
+            addDir(title,"http://www.myspass.de"+url,"listMediaTypes","",title)
         xbmcplugin.endOfDirectory(pluginhandle)
         if forceViewMode==True:
           xbmc.executebuiltin('Container.SetViewMode('+viewMode+')')
@@ -75,7 +81,7 @@ def listSeasons(url):
                 urlNewVideos="http://www.myspass.de/myspass/includes/php/ajax.php?action=getEpisodeListFromSeason"+url.replace("&sortBy=votes&","&sortBy=episode_desc&")+"&pageNumber=0"
               url="http://www.myspass.de/myspass/includes/php/ajax.php?action=getEpisodeListFromSeason"+url+"&pageNumber=0"
               if url.find("&sortBy=views&")==-1 and url.find("&sortBy=votes&")==-1:
-                addDir(title,url,'listVideosAZ',"")
+                addDir(title,url,'listVideosAZ',"",params.get('show'),i)
           if urlNewVideos!="":
             addDir(translation(30007),urlNewVideos,'listVideosAZ',"")
         xbmcplugin.endOfDirectory(pluginhandle)
@@ -102,7 +108,7 @@ def listVideosAZ(url):
             entry=entry[entry.find('<a href='):]
             match=re.compile('>(.+?)<', re.DOTALL).findall(entry)
             duration=match[0]
-            addLink(title,id,'playVideo',thumb,desc,duration)
+            addLink(title,id,'playVideo',thumb,desc,duration, params.get('show'), params.get('season'), i)
         match=re.compile("setPageByAjaxTextfield\\('(.+?)', '(.+?)'", re.DOTALL).findall(content)
         if len(match)>0:
           currentPage=int(match[0][0])
@@ -129,7 +135,7 @@ def listVideos(url):
             thumb="http://www.myspass.de"+match[0]
             match=re.compile('<span class="length">(.+?)</span>', re.DOTALL).findall(entry)
             duration=match[0]
-            addLink(title,id,'playVideo',thumb,"",duration)
+            addLink(title,id,'playVideo',thumb,"",duration, params.get('show'), params.get('season'), i)
         match=re.compile("setPageByAjaxTextfield\\('(.+?)', '(.+?)'", re.DOTALL).findall(content)
         if len(match)>0:
           currentPage=int(match[0][0])
@@ -172,26 +178,68 @@ def parameters_string_to_dict(parameters):
                     paramDict[paramSplits[0]] = paramSplits[1]
         return paramDict
 
-def addLink(name,url,mode,iconimage,desc="",duration=""):
+def addLink(name,url,mode,iconimage,desc="",duration="",show='none',season=0,episode=0):
         u=sys.argv[0]+"?url="+urllib.quote_plus(url)+"&mode="+str(mode)
         ok=True
+	if show == 'none':
+	    show = params.get('show')
+	if not show is None:
+	    u = u+"&show="+show
+	if season == 0:
+	    season = params.get('season')
         liz=xbmcgui.ListItem(name, iconImage="DefaultVideo.png", thumbnailImage=iconimage)
-        liz.setInfo( type="Video", infoLabels={ "Title": name, "Plot": desc, "Duration": duration } )
+        liz.setInfo( type="Video", infoLabels={ "Title": name, "Plot": desc, "Duration": duration, "tvshowtitle": show, "season": season, "episode": episode } )
         liz.setProperty('IsPlayable', 'true')
+	liz.addContextMenuItems([ ( 'Download', "XBMC.RunPlugin(%s?mode=download&url=%s&show=%s&season=%s&episode=%s&title=%s)" % ( sys.argv[0], urllib.quote_plus(url), urllib.quote_plus(show), season, episode, name ) )] )  
         ok=xbmcplugin.addDirectoryItem(handle=int(sys.argv[1]),url=u,listitem=liz)
         return ok
 
-def addDir(name,url,mode,iconimage):
-        u=sys.argv[0]+"?url="+urllib.quote_plus(url)+"&mode="+str(mode)
+def addDir(name,url,mode,iconimage,show='none',season=0):
+        u=sys.argv[0]+"?url="+urllib.quote_plus(url)+"&mode="+str(mode)+"&season="+str(season)
+	if show == 'none':
+	    show = params.get('show')
+	if not show is None:
+	    u = u+"&show="+show
+	if season == 0:
+	    season = params.get('season')
+	u = u+"&season="+str(season)
         ok=True
         liz=xbmcgui.ListItem(name, iconImage="DefaultFolder.png", thumbnailImage=iconimage)
         liz.setInfo( type="Video", infoLabels={ "Title": name } )
         ok=xbmcplugin.addDirectoryItem(handle=int(sys.argv[1]),url=u,listitem=liz,isFolder=True)
         return ok
          
+def download(url, params):
+	#episode = xbmc.getInfoLabel('ListItem.Episode')
+	#season = xbmc.getInfoLabel('ListItem.Season')
+	#show = xbmc.getInfoLabel('ListItem.TVShowTitle')
+	#title = xbmc.getInfoLabel('ListItem.Title') 
+	episode = params.get('episode')
+	show = urllib.unquote_plus(params.get('show'))
+	title = urllib.unquote_plus(params.get('title'))
+	season = params.get('season')
+	folder = downloadFolder + "/" + show + "/" + 'Season ' + params.get('season') + "/"
+	content = getUrl("http://www.myspass.de/myspass/includes/apps/video/getvideometadataxml.php?id="+url)
+        match=re.compile('<url_flv><!\\[CDATA\\[(.+?)\\]\\]></url_flv>', re.DOTALL).findall(content)
+	url = path=match[0]
+
+	params = {"url": url, "download_path": folder, "Title": title}
+	if len(str(episode)) < 2:
+	    episode = '0'+episode
+	if len(str(season)) < 2:
+	    season = '0'+season
+	filename = show + ".s" + season + ".e" + episode  + "." + title + ".mp4"
+
+	if not os.path.exists(folder):
+	    os.makedirs(folder)
+        downloader.download(filename, params)
+	return True
+
+
 params=parameters_string_to_dict(sys.argv[2])
 mode=params.get('mode')
 url=params.get('url')
+
 if type(url)==type(str()):
   url=urllib.unquote_plus(url)
 
@@ -211,5 +259,7 @@ elif mode == 'listOrderType':
     listOrderType(url)
 elif mode == 'playVideo':
     playVideo(url)
+elif mode == 'download':
+    download(url,params)
 else:
     index()
